@@ -1,0 +1,49 @@
+# Environnements virtuels
+.venv/
+env/
+venv/
+
+# Fichiers Python compilés
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# Fichiers temporaires et logs
+*.log
+*.tmp
+*.temp
+
+# Fichiers générés par l'OS
+.DS_Store
+Thumbs.db
+
+# Cache & données temporaires
+*.cache
+*.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Environnements et variables
+.env
+.env.*
+
+# Docker
+*.pid
+*.seed
+docker-compose.override.yml
+
+# PyInstaller
+*.spec
+build/
+dist/
+
+# VSCode
+.vscode/
+
+# Autres
+*.sqlite3
