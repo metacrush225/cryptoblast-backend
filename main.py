@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import httpx
 import pandas as pd
 import numpy as np
@@ -26,11 +26,31 @@ class CryptoData(BaseModel):
     timestamp: str
     price_change_24h: float
     volume_24h: float
+    sma10: Optional[float] = None
+    sma30: Optional[float] = None
+
+class HistoryPoint(BaseModel):
+    timestamp: str
+    open: float
+    close: float
+    sma10: Optional[float] = None
+    sma30: Optional[float] = None
+
+class HistoryResponse(BaseModel):
+    success: bool
+    data: List[HistoryPoint] = []
+    count: int = 0
+    message: Optional[str] = None
 
 class ApiResponse(BaseModel):
     success: bool
     data: Optional[CryptoData] = None
     message: Optional[str] = None
+
+# Fonction utilitaire pour calculer la SMA avec gestion des NaN
+def rolling_sma(series: pd.Series, window: int) -> pd.Series:
+    """Calcule la moyenne mobile simple avec gestion des NaN"""
+    return series.rolling(window=window, min_periods=window).mean()
 
 # Classe pour gérer les données crypto
 class CryptoDataManager:
@@ -63,6 +83,28 @@ class CryptoDataManager:
         rsi = 100 - (100 / (1 + rs))
         
         return float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else 50.0
+
+    def get_14days_params(self, interval: str) -> dict:
+        """
+        Retourne les paramètres optimaux pour récupérer 14 jours d'historique
+        selon l'intervalle choisi
+        """
+        intervals_config = {
+            "1m": {"limit": 1000, "actual_days": "~16.7 heures"},  # Max Binance
+            "3m": {"limit": 1000, "actual_days": "~2.1 jours"},
+            "5m": {"limit": 1000, "actual_days": "~3.5 jours"}, 
+            "15m": {"limit": 1000, "actual_days": "~10.4 jours"},
+            "30m": {"limit": 672, "actual_days": "14 jours"},     # 30min * 672 = 14j
+            "1h": {"limit": 336, "actual_days": "14 jours"},      # 1h * 336 = 14j
+            "2h": {"limit": 168, "actual_days": "14 jours"},      # 2h * 168 = 14j
+            "4h": {"limit": 84, "actual_days": "14 jours"},       # 4h * 84 = 14j
+            "6h": {"limit": 56, "actual_days": "14 jours"},       # 6h * 56 = 14j
+            "8h": {"limit": 42, "actual_days": "14 jours"},       # 8h * 42 = 14j
+            "12h": {"limit": 28, "actual_days": "14 jours"},      # 12h * 28 = 14j
+            "1d": {"limit": 14, "actual_days": "14 jours"},       # 1d * 14 = 14j
+        }
+        
+        return intervals_config.get(interval, {"limit": 336, "actual_days": "14 jours"})
 
     async def get_24h_ticker(self, symbol: str) -> dict:
         """
@@ -112,6 +154,10 @@ class CryptoDataManager:
             # Calcul du RSI
             rsi = self.calculate_rsi(closing_prices)
             
+            s = pd.Series(closing_prices, dtype=float)
+            sma10 = float(s.rolling(10).mean().iloc[-1]) if len(s) >= 10 and not pd.isna(s.rolling(10).mean().iloc[-1]) else None
+            sma30 = float(s.rolling(30).mean().iloc[-1]) if len(s) >= 30 and not pd.isna(s.rolling(30).mean().iloc[-1]) else None
+
             # Construction de l'objet de réponse
             crypto_data = CryptoData(
                 symbol=symbol,
@@ -120,7 +166,9 @@ class CryptoDataManager:
                 rsi=round(rsi, 2),
                 timestamp=datetime.now().isoformat(),
                 price_change_24h=float(ticker_data['priceChangePercent']),
-                volume_24h=float(ticker_data['volume'])
+                volume_24h=float(ticker_data['volume']),
+                sma10=sma10,
+                sma30=sma30
             )
             
             return crypto_data
@@ -167,6 +215,7 @@ async def root():
         "status": "active",
         "endpoints": {
             "crypto_data": "/api/crypto/{symbol}",
+            "crypto_history": "/api/crypto/{symbol}/history",
             "health": "/health",
             "docs": "/docs"
         }
@@ -226,6 +275,90 @@ async def get_crypto_data(symbol: str):
             message="Erreur interne du serveur"
         )
 
+@app.get("/api/crypto/{symbol}/history", response_model=HistoryResponse, tags=["Crypto"])
+async def get_crypto_history(symbol: str, interval: str = "1h", days: int = 14):
+    """
+    Récupère l'historique crypto sur 14 jours (par défaut)
+    
+    - **symbol**: Symbole de la crypto (ex: BTCUSDT, ETHUSDT)
+    - **interval**: Intervalle temporel (1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d)
+    - **days**: Nombre de jours d'historique (par défaut: 14)
+    
+    Intervalles recommandés pour 14 jours:
+    - 1h : 336 points (recommandé)
+    - 2h : 168 points  
+    - 4h : 84 points
+    - 1d : 14 points
+    """
+    symbol = symbol.upper()
+    valid_symbols = ["BTCUSDT", "ETHUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT"]
+    
+    if symbol not in valid_symbols:
+        return HistoryResponse(
+            success=False, 
+            data=[], 
+            count=0,
+            message=f"Symbole non supporté. Symboles valides: {', '.join(valid_symbols)}"
+        )
+
+    try:
+        async with CryptoDataManager() as manager:
+            # Calcul du nombre de points nécessaires selon l'intervalle
+            params = manager.get_14days_params(interval)
+            limit = params["limit"]
+            
+            # Ajustement si l'utilisateur veut plus ou moins de 14 jours
+            if days != 14:
+                # Calcul approximatif basé sur l'intervalle
+                hours_per_point = {
+                    "1m": 1/60, "3m": 3/60, "5m": 5/60, "15m": 15/60, "30m": 0.5,
+                    "1h": 1, "2h": 2, "4h": 4, "6h": 6, "8h": 8, "12h": 12, "1d": 24
+                }
+                hours_needed = days * 24
+                limit = min(int(hours_needed / hours_per_point.get(interval, 1)), 1000)  # Max 1000 (limite Binance)
+            
+            logger.info(f"Récupération de {limit} points pour {symbol} avec intervalle {interval}")
+            
+            klines = await manager.get_klines(symbol, interval=interval, limit=limit)
+            
+            # Traitement des données
+            opens = [float(k[1]) for k in klines]
+            closes = [float(k[4]) for k in klines]
+            times = [datetime.fromtimestamp(k[0] / 1000).isoformat() for k in klines]
+
+            # Calcul des moyennes mobiles
+            s_close = pd.Series(closes, dtype=float)
+            sma10_s = rolling_sma(s_close, 10)
+            sma30_s = rolling_sma(s_close, 30)
+
+            # Construction des points d'historique
+            points: List[HistoryPoint] = []
+            for i in range(len(klines)):
+                p = HistoryPoint(
+                    timestamp=times[i],
+                    open=opens[i],
+                    close=closes[i],
+                    sma10=None if pd.isna(sma10_s.iloc[i]) else round(float(sma10_s.iloc[i]), 2),
+                    sma30=None if pd.isna(sma30_s.iloc[i]) else round(float(sma30_s.iloc[i]), 2),
+                )
+                points.append(p)
+
+            return HistoryResponse(
+                success=True, 
+                data=points, 
+                count=len(points),
+                message=f"Historique de {len(points)} points récupéré avec succès ({params['actual_days']})"
+            )
+
+    except Exception as e:
+        logger.exception(f"Erreur lors de la récupération de l'historique pour {symbol}: {e}")
+        return HistoryResponse(
+            success=False, 
+            data=[], 
+            count=0, 
+            message="Erreur interne du serveur"
+        )
+
 @app.get("/api/crypto", tags=["Crypto"])
 async def get_supported_symbols():
     """
@@ -248,6 +381,32 @@ async def get_supported_symbols():
         "count": len(symbols)
     }
 
+@app.get("/api/intervals", tags=["Info"])
+async def get_supported_intervals():
+    """
+    Retourne les intervalles supportés et leurs configurations pour 14 jours
+    """
+    intervals = {
+        "1m": {"points": 1000, "coverage": "~16.7 heures", "recommended": False},
+        "3m": {"points": 1000, "coverage": "~2.1 jours", "recommended": False},
+        "5m": {"points": 1000, "coverage": "~3.5 jours", "recommended": False},
+        "15m": {"points": 1000, "coverage": "~10.4 jours", "recommended": False},
+        "30m": {"points": 672, "coverage": "14 jours", "recommended": True},
+        "1h": {"points": 336, "coverage": "14 jours", "recommended": True},
+        "2h": {"points": 168, "coverage": "14 jours", "recommended": True},
+        "4h": {"points": 84, "coverage": "14 jours", "recommended": True},
+        "6h": {"points": 56, "coverage": "14 jours", "recommended": False},
+        "8h": {"points": 42, "coverage": "14 jours", "recommended": False},
+        "12h": {"points": 28, "coverage": "14 jours", "recommended": False},
+        "1d": {"points": 14, "coverage": "14 jours", "recommended": True},
+    }
+    
+    return {
+        "success": True,
+        "data": intervals,
+        "note": "Les intervalles recommandés offrent un bon équilibre entre granularité et performance"
+    }
+
 # Gestion des erreurs
 @app.exception_handler(StarletteHTTPException)
 async def custom_http_exception_handler(request: Request, exc: StarletteHTTPException):
@@ -260,7 +419,9 @@ async def custom_http_exception_handler(request: Request, exc: StarletteHTTPExce
                 "message": "Endpoint non trouvé",
                 "available_endpoints": [
                     "/api/crypto/{symbol}",
+                    "/api/crypto/{symbol}/history",
                     "/api/crypto",
+                    "/api/intervals",
                     "/health",
                     "/docs"
                 ]
