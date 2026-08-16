@@ -9,6 +9,7 @@ Crypto Dashboard API — version améliorée
 
 import os
 import time
+import json
 import logging
 import asyncio
 from contextlib import asynccontextmanager
@@ -17,6 +18,10 @@ from typing import Optional, List, Dict, Tuple, Literal
 
 import httpx
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")  # backend non-interactif, pas d'affichage requis côté serveur
+import matplotlib.pyplot as plt
+from io import BytesIO
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -246,11 +251,44 @@ async def build_crypto_data(binance: BinanceClient, symbol: str) -> CryptoData:
 
 
 # --------------------------------------------------------------------------
+# Génération de graphique (remplace le "chart" pré-généré de l'ancien bot JS)
+# --------------------------------------------------------------------------
+
+def generate_chart_png(symbol: str, klines: list) -> bytes:
+    """Génère un PNG (close + SMA10/30) à partir des klines Binance, en mémoire."""
+    closes = [float(k[4]) for k in klines]
+    times = [datetime.fromtimestamp(k[0] / 1000) for k in klines]
+
+    s = pd.Series(closes, dtype=float)
+    sma10 = s.rolling(10).mean()
+    sma30 = s.rolling(30).mean()
+
+    fig, ax = plt.subplots(figsize=(8, 4), dpi=120)
+    ax.plot(times, closes, label="Close", color="#5865F2", linewidth=1.5)
+    if sma10.notna().any():
+        ax.plot(times, sma10, label="SMA10", color="#57F287", linewidth=1, linestyle="--")
+    if sma30.notna().any():
+        ax.plot(times, sma30, label="SMA30", color="#ED4245", linewidth=1, linestyle="--")
+
+    ax.set_title(f"{SYMBOL_NAMES.get(symbol, symbol)} ({symbol})")
+    ax.legend(loc="upper left", fontsize=8)
+    ax.grid(alpha=0.2)
+    fig.autofmt_xdate()
+    fig.tight_layout()
+
+    buf = BytesIO()
+    fig.savefig(buf, format="png")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+# --------------------------------------------------------------------------
 # Alertes Discord (natif Python, pas de Node/axios)
 # --------------------------------------------------------------------------
 
 async def send_discord_alert(client: httpx.AsyncClient, content: str):
-    """Envoie un message dans le salon d'alertes via l'API bot Discord (pas de webhook)."""
+    """Envoie un message texte simple dans le salon d'alertes (sans graphique)."""
     if not DISCORD_ENABLED:
         logger.debug("Bot Discord non configuré (DISCORD_BOT_TOKEN / DISCORD_ALERT_CHANNEL_ID manquant), alerte ignorée.")
         return
@@ -266,32 +304,73 @@ async def send_discord_alert(client: httpx.AsyncClient, content: str):
         logger.error(f"Echec de l'envoi de l'alerte Discord: {e}")
 
 
+async def send_discord_alert_with_chart(
+    client: httpx.AsyncClient, symbol: str, rsi: float, close: float, oversold: bool, chart_png: bytes
+):
+    """Envoie un embed + graphique en pièce jointe, équivalent Python du sendGraph() JS."""
+    if not DISCORD_ENABLED:
+        logger.debug("Bot Discord non configuré, alerte avec graphique ignorée.")
+        return
+
+    name = SYMBOL_NAMES.get(symbol, symbol)
+    embed = {
+        "color": 0xFF0000 if oversold else 0x00FF00,
+        "title": f"⚠️ {'Oversold' if oversold else 'Overbought'} : {name}",
+        "description": (
+            f"Le RSI de **{name}** est {'< ' + str(RSI_OVERSOLD) + ' (survente)' if oversold else '> ' + str(RSI_OVERBOUGHT) + ' (surachat)'}."
+            f"\nRSI actuel : **{rsi}** — Close : **{close}**"
+        ),
+        "image": {"url": f"attachment://{symbol}-chart.png"},
+        "timestamp": datetime.now().isoformat(),
+        "footer": {"text": "RSI Alert System"},
+    }
+
+    files = {
+        "files[0]": (f"{symbol}-chart.png", chart_png, "image/png"),
+    }
+    payload = {"payload_json": (None, json.dumps({"embeds": [embed]}), "application/json")}
+    files.update(payload)
+
+    try:
+        response = await client.post(
+            f"{DISCORD_API_BASE}/channels/{DISCORD_ALERT_CHANNEL_ID}/messages",
+            headers={"Authorization": f"Bot {DISCORD_BOT_TOKEN}"},
+            files=files,
+        )
+        response.raise_for_status()
+        logger.info(f"Alerte Discord avec graphique envoyée pour {symbol}.")
+    except httpx.HTTPError as e:
+        logger.error(f"Echec de l'envoi de l'alerte avec graphique pour {symbol}: {e}")
+
+
 async def check_rsi_and_alert(client: httpx.AsyncClient):
-    """Vérifie le RSI de tous les symboles suivis et envoie une alerte Discord si seuil dépassé."""
+    """Vérifie le RSI de tous les symboles suivis et envoie une alerte Discord (embed + graphique) si seuil dépassé."""
     binance = BinanceClient(client)
-    oversold, overbought = [], []
+    alerts_sent = 0
 
     for symbol in VALID_SYMBOLS:
         try:
             data = await build_crypto_data(binance, symbol)
-            if data.rsi <= RSI_OVERSOLD:
-                oversold.append(data)
-            elif data.rsi >= RSI_OVERBOUGHT:
-                overbought.append(data)
+            is_oversold = data.rsi <= RSI_OVERSOLD
+            is_overbought = data.rsi >= RSI_OVERBOUGHT
+
+            if not is_oversold and not is_overbought:
+                continue
+
+            # Historique un peu plus long pour un graphique lisible (ex: 5 derniers jours en 1h)
+            klines = await binance.get_klines(symbol, "1h", 120)
+            chart_png = generate_chart_png(symbol, klines)
+
+            await send_discord_alert_with_chart(
+                client, symbol, data.rsi, data.close, oversold=is_oversold, chart_png=chart_png
+            )
+            alerts_sent += 1
+
         except Exception as e:
             logger.error(f"Erreur lors du check RSI pour {symbol}: {e}")
 
-    if not oversold and not overbought:
+    if alerts_sent == 0:
         logger.info("Aucun symbole en zone de survente/surachat.")
-        return
-
-    lines = ["📊 **Alerte RSI**"]
-    for d in oversold:
-        lines.append(f"🟢 SURVENTE — {SYMBOL_NAMES.get(d.symbol, d.symbol)} ({d.symbol}) : RSI {d.rsi} (close {d.close})")
-    for d in overbought:
-        lines.append(f"🔴 SURACHAT — {SYMBOL_NAMES.get(d.symbol, d.symbol)} ({d.symbol}) : RSI {d.rsi} (close {d.close})")
-
-    await send_discord_alert(client, "\n".join(lines))
 
 
 async def rsi_background_loop(client: httpx.AsyncClient):
