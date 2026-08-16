@@ -30,10 +30,19 @@ async def check_rsi_and_alert(client: httpx.AsyncClient):
 
             # Historique un peu plus long pour un graphique lisible (ex: 5 derniers jours en 1h)
             klines = await binance.get_klines(symbol, "1h", 120)
-            chart_png = generate_chart_png(symbol, klines)
+            chart_png = generate_chart_png(
+                symbol=symbol,
+                klines=klines,
+                rsi_value=data.rsi,
+            )
 
             await send_discord_alert_with_chart(
-                client, symbol, data.rsi, data.close, oversold=is_oversold, chart_png=chart_png
+                client,
+                symbol,
+                data.rsi,
+                data.close,
+                oversold=is_oversold,
+                chart_png=chart_png,
             )
             alerts_sent += 1
 
