@@ -7,7 +7,9 @@ import pandas as pd
 from fastapi import APIRouter, Depends
 
 from app.config import VALID_SYMBOLS, SYMBOL_NAMES, INTERVALS_CONFIG, HOURS_PER_POINT, IntervalStr
-from app.models import ApiResponse, HistoryResponse, HistoryPoint
+from app.models.history_point import HistoryPoint
+from app.responses.api_response import ApiResponse
+from app.responses.history_response import HistoryResponse
 from app.clients.binance import BinanceClient
 from app.services.crypto import build_crypto_data, rolling_sma
 from app.dependencies import get_binance_client

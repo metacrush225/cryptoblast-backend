@@ -5,7 +5,7 @@ from datetime import datetime
 import pandas as pd
 
 from app.clients.binance import BinanceClient
-from app.models import CryptoData
+from app.models.crypto_data import CryptoData
 
 
 def calculate_rsi(prices: list, period: int = 14) -> float:
