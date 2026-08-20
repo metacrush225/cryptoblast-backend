@@ -31,6 +31,7 @@ SYMBOL_NAMES = {sym: os.getenv(sym, sym) for sym in VALID_SYMBOLS}
 # --- Discord bot ---
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_ALERT_CHANNEL_ID = os.getenv("DISCORD_ALERT_CHANNEL_ID")
+ALERTS_SCHEDULER_TOKEN = os.getenv("ALERTS_SCHEDULER_TOKEN")
 DISCORD_API_BASE = "https://discord.com/api/v10"
 DISCORD_ENABLED = bool(DISCORD_BOT_TOKEN) and bool(DISCORD_ALERT_CHANNEL_ID)
 
