@@ -1,11 +1,10 @@
 """Orchestration : vérifie le RSI de tous les symboles et déclenche les alertes Discord."""
 
-import asyncio
 import logging
 
 import httpx
 
-from app.config import VALID_SYMBOLS, RSI_OVERSOLD, RSI_OVERBOUGHT, RSI_CHECK_INTERVAL_SECONDS
+from app.config import VALID_SYMBOLS, RSI_OVERSOLD, RSI_OVERBOUGHT
 from app.clients.binance import BinanceClient
 from app.clients.discord import send_discord_alert_with_chart
 from app.services.crypto import build_crypto_data
@@ -51,13 +50,3 @@ async def check_rsi_and_alert(client: httpx.AsyncClient):
 
     if alerts_sent == 0:
         logger.info("Aucun symbole en zone de survente/surachat.")
-
-
-async def rsi_background_loop(client: httpx.AsyncClient):
-    """Boucle planifiée : vérifie le RSI toutes les RSI_CHECK_INTERVAL_SECONDS."""
-    while True:
-        try:
-            await check_rsi_and_alert(client)
-        except Exception as e:
-            logger.error(f"Erreur dans la boucle de vérification RSI: {e}")
-        await asyncio.sleep(RSI_CHECK_INTERVAL_SECONDS)
