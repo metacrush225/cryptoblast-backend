@@ -32,22 +32,32 @@ async def send_discord_alert(client: httpx.AsyncClient, content: str):
 
 
 async def send_discord_alert_with_chart(
-    client: httpx.AsyncClient, symbol: str, rsi: float, close: float, oversold: bool, chart_png: bytes
+    client: httpx.AsyncClient,
+    symbol: str,
+    rsi: float,
+    close: float,
+    oversold: bool,
+    chart_png: bytes,
+    ai_summary: str | None = None,
 ):
-    """Envoie un embed + graphique en pièce jointe."""
+    """Envoie un embed + graphique en pièce jointe, avec synthèse IA optionnelle."""
     if not DISCORD_ENABLED:
         logger.debug("Bot Discord non configuré, alerte avec graphique ignorée.")
         return
 
     name = SYMBOL_NAMES.get(symbol, symbol)
+    description = (
+        f"Le RSI de **{name}** est "
+        f"{'< ' + str(RSI_OVERSOLD) + ' (survente)' if oversold else '> ' + str(RSI_OVERBOUGHT) + ' (surachat)'}." 
+        f"\nRSI actuel : **{rsi}** — Close : **{close}**"
+    )
+    if ai_summary:
+        description += f"\n\n**Analyse IA**\n{ai_summary}"
+
     embed = {
         "color": 0xFF0000 if oversold else 0x00FF00,
         "title": f"⚠️ {'Oversold' if oversold else 'Overbought'} : {name}",
-        "description": (
-            f"Le RSI de **{name}** est "
-            f"{'< ' + str(RSI_OVERSOLD) + ' (survente)' if oversold else '> ' + str(RSI_OVERBOUGHT) + ' (surachat)'}."
-            f"\nRSI actuel : **{rsi}** — Close : **{close}**"
-        ),
+        "description": description,
         "image": {"url": f"attachment://{symbol}-chart.png"},
         "timestamp": datetime.now().isoformat(),
         "footer": {"text": "RSI Alert System"},
