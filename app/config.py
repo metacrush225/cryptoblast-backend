@@ -35,6 +35,11 @@ ALERTS_SCHEDULER_TOKEN = os.getenv("ALERTS_SCHEDULER_TOKEN")
 DISCORD_API_BASE = "https://discord.com/api/v10"
 DISCORD_ENABLED = bool(DISCORD_BOT_TOKEN) and bool(DISCORD_ALERT_CHANNEL_ID)
 
+# --- Gemini / IA ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_ENABLED = bool(GEMINI_API_KEY)
+
 # --- Intervalles Binance supportés ---
 IntervalStr = Literal["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"]
 

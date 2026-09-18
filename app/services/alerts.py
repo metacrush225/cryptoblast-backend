@@ -3,10 +3,12 @@
 import logging
 
 import httpx
+import pandas as pd
 
-from app.config import VALID_SYMBOLS, RSI_OVERSOLD, RSI_OVERBOUGHT
+from app.config import VALID_SYMBOLS, RSI_OVERSOLD, RSI_OVERBOUGHT, GEMINI_ENABLED
 from app.clients.binance import BinanceClient
 from app.clients.discord import send_discord_alert_with_chart
+from app.services.ai_analysis import analyze_chart_and_data
 from app.services.crypto import build_crypto_data
 from app.services.chart import generate_chart_png
 
@@ -35,6 +37,25 @@ async def check_rsi_and_alert(client: httpx.AsyncClient):
                 rsi_value=data.rsi,
             )
 
+            ai_summary = None
+            if GEMINI_ENABLED:
+                try:
+                    closes = [float(k[4]) for k in klines]
+                    s = pd.Series(closes, dtype=float)
+                    recent_df = pd.DataFrame({
+                        "close": closes,
+                        "rsi": [float(data.rsi)] * len(closes),
+                        "sma_10": s.rolling(10).mean(),
+                        "sma_30": s.rolling(30).mean(),
+                    }).tail(10)
+                    ai_summary = await analyze_chart_and_data(
+                        image_bytes=chart_png,
+                        symbol=symbol,
+                        df_last_candles=recent_df,
+                    )
+                except Exception as exc:
+                    logger.warning(f"Analyse IA non disponible pour {symbol}: {exc}")
+
             await send_discord_alert_with_chart(
                 client,
                 symbol,
@@ -42,6 +63,7 @@ async def check_rsi_and_alert(client: httpx.AsyncClient):
                 data.close,
                 oversold=is_oversold,
                 chart_png=chart_png,
+                ai_summary=ai_summary,
             )
             alerts_sent += 1
 
