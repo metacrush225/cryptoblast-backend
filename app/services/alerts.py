@@ -9,7 +9,13 @@ from app.config import VALID_SYMBOLS, RSI_OVERSOLD, RSI_OVERBOUGHT, GEMINI_ENABL
 from app.clients.binance import BinanceClient
 from app.clients.discord import send_discord_alert_with_chart
 from app.services.ai_analysis import analyze_chart_and_data
-from app.services.crypto import build_crypto_data
+from app.services.crypto import (
+    build_crypto_data,
+    rolling_sma,
+    calculate_ema,
+    calculate_macd,
+    calculate_atr,
+)
 from app.services.chart import generate_chart_png
 
 logger = logging.getLogger(__name__)
@@ -40,13 +46,24 @@ async def check_rsi_and_alert(client: httpx.AsyncClient):
             ai_summary = None
             if GEMINI_ENABLED:
                 try:
-                    closes = [float(k[4]) for k in klines]
-                    s = pd.Series(closes, dtype=float)
+                    highs = pd.Series([float(k[2]) for k in klines], dtype=float)
+                    lows = pd.Series([float(k[3]) for k in klines], dtype=float)
+                    closes = pd.Series([float(k[4]) for k in klines], dtype=float)
+                    volumes = pd.Series([float(k[5]) for k in klines], dtype=float)
+                    macd_series, signal_series = calculate_macd(closes)
+
                     recent_df = pd.DataFrame({
                         "close": closes,
                         "rsi": [float(data.rsi)] * len(closes),
-                        "sma_10": s.rolling(10).mean(),
-                        "sma_30": s.rolling(30).mean(),
+                        "sma_10": rolling_sma(closes, 10),
+                        "sma_30": rolling_sma(closes, 30),
+                        "volume": volumes,
+                        "volume_ma_20": rolling_sma(volumes, 20),
+                        "ema_9": calculate_ema(closes, 9),
+                        "ema_21": calculate_ema(closes, 21),
+                        "macd": macd_series,
+                        "signal": signal_series,
+                        "atr_14": calculate_atr(highs, lows, closes, 14),
                     }).tail(10)
                     ai_summary = await analyze_chart_and_data(
                         image_bytes=chart_png,

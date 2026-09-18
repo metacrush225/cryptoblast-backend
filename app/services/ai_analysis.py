@@ -29,13 +29,17 @@ async def analyze_chart_and_data(image_bytes: bytes | None, symbol: str, df_last
         df_last_candles = pd.DataFrame()
 
     if not df_last_candles.empty:
-        relevant_columns = [col for col in ["close", "rsi", "sma_10", "sma_30"] if col in df_last_candles.columns]
+        relevant_columns = [
+            col for col in [
+                "close", "rsi", "sma_10", "sma_30",
+                "volume", "volume_ma_20",
+                "ema_9", "ema_21", "macd", "signal", "atr_14",
+            ] if col in df_last_candles.columns
+        ]
         if relevant_columns:
             recent_data_str = df_last_candles[relevant_columns].tail(10).to_string(index=False)
         else:
             recent_data_str = df_last_candles.tail(10).to_string(index=False)
-    else:
-        recent_data_str = "Aucune donnée technique fournie par le backend."
 
     prompt = f"""
     Tu es un expert en analyse technique de marché crypto.
@@ -43,15 +47,32 @@ async def analyze_chart_and_data(image_bytes: bytes | None, symbol: str, df_last
     Analyse le graphique ci-joint pour {symbol} ainsi que les 10 dernières données calculées localement :
     {recent_data_str}
 
-    Instructions :
-    1. Observe la forme des bougies sur le graphique (mèches, structures d'hésitation ou de rejet).
-    2. Identifie si le RSI bas s'accompagne d'une divergence ou d'une perte de momentum vendeur.
-    3. Donne une analyse concise pour Discord (3 puces max) :
-       - **Action du prix** : Structure visuelle / tendance immédiate.
-       - **Niveau clé** : Support/Résistance technique identifiable sur le graphique.
-       - **Signal** : Probabilité de rebond ou risque de continuation baissière.
+    Interprète bien ces colonnes :
+    - close = prix de clôture
+    - rsi = force/momentum
+    - sma_10 et sma_30 = moyennes mobiles rapides et lentes
+    - volume et volume_ma_20 = force d'achat/vente
+    - ema_9 et ema_21 = tendances courtes / plus longues
+    - macd et signal = confirmation de tendance / momentum
+    - atr_14 = volatilité
 
-    Sois précis, synthétique et direct. Pas de disclaimer.
+    Instructions strictes :
+    1. Observe la forme des bougies sur le graphique (mèches, structures d'hésitation, rejet, impulsion, faux break).
+    2. Compare la tendance courte et la tendance plus longue : si ema_9 > ema_21, tendance haussière ; si ema_9 < ema_21, tendance baissière.
+    3. Vérifie si le RSI bas ou haut est confirmé ou non par le volume, le MACD et la structure des bougies.
+    4. Détermine si le signal est vraiment intéressant ou simplement un faux signal.
+    5. Donne une analyse concise pour Discord en 4 éléments max :
+       - **Action du prix** : structure visuelle / tendance immédiate.
+       - **Niveau clé** : support ou résistance technique visible.
+       - **Signal** : probabilité de rebond ou risque de continuation baissière, en te basant sur RSI + volume + EMA/MACD.
+       - **Explication simple** : explique en français très simple ce que ça veut dire pour un débutant, sans jargon technique.
+
+    Règles de sortie :
+    - Réponds en français.
+    - Sois synthétique, précis, direct.
+    - Mets l'accent sur la logique de marché, pas sur les discours génériques.
+    - Pas de disclaimer.
+    - Si le signal est faible ou incertain, dis-le clairement.
     """
 
     try:

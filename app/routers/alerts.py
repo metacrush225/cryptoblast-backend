@@ -79,7 +79,11 @@ async def analyze_chart(request: ChartAnalysisRequest):
     try:
         recent_df = pd.DataFrame(request.recent_data or [])
         if not recent_df.empty:
-            for col in ["close", "rsi", "sma_10", "sma_30"]:
+            for col in [
+                "close", "rsi", "sma_10", "sma_30",
+                "volume", "volume_ma_20",
+                "ema_9", "ema_21", "macd", "signal", "atr_14",
+            ]:
                 if col in recent_df.columns:
                     recent_df[col] = pd.to_numeric(recent_df[col], errors="coerce")
 
