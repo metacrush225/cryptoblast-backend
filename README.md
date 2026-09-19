@@ -1,153 +1,253 @@
 # CryptoBlast Backend
 
-## Pitch entretien
+Backend de CryptoBlast, un service de suivi automatisé du marché des cryptomonnaies construit avec FastAPI.
 
-CryptoBlast est une API FastAPI qui sert des donnees de marche crypto
-provenant de Binance. Elle recupere le ticker 24h et les chandeliers (klines),
-calcule des indicateurs techniques simples (RSI et moyennes mobiles SMA 10/30),
-puis renvoie des reponses validees par Pydantic. Un endpoint securise peut
-declencher une verification de tous les symboles suivis et envoyer une alerte
-Discord avec un graphique lorsqu'un RSI sort des seuils 30/70.
+L’API collecte les données de marché de Binance, calcule plusieurs indicateurs techniques et peut publier des alertes accompagnées d’un graphique dans un salon Discord.
+
+> Les informations et signaux produits par CryptoBlast sont fournis à titre informatif. Ils ne constituent pas des conseils financiers.
+
+## Fonctionnalités
+
+- récupération du ticker Binance sur 24 heures ;
+- récupération de chandeliers pour plusieurs intervalles ;
+- calcul du RSI sur 14 périodes ;
+- calcul des moyennes mobiles SMA 10 et SMA 30 ;
+- historique des prix et indicateurs jusqu’à 1 000 points ;
+- cache mémoire avec durée de vie configurable ;
+- nouvelles tentatives automatiques en cas d’erreur réseau ou serveur ;
+- génération de graphiques PNG ;
+- alertes Discord en cas de survente ou de surachat ;
+- endpoint sécurisé destiné à Google Cloud Scheduler ;
+- validation des entrées et des réponses avec Pydantic ;
+- documentation OpenAPI interactive.
+
+## Stack technique
+
+- Python 3.11
+- FastAPI
+- Pydantic
+- HTTPX
+- Binance REST API
+- Discord REST API
+- Google Cloud Run
+- Google Cloud Scheduler
+- Docker
 
 ## Architecture
 
 ```text
-app/main.py
-  |-- lifespan: cree et ferme un httpx.AsyncClient partage
-  |-- CORS et gestion des erreurs HTTP
-  |-- routers: info, crypto, alerts
-		 |-- services: calcul RSI/SMA, orchestration des alertes, graphiques
-		 |-- clients: Binance REST et Discord REST
-		 |-- models/responses: schemas Pydantic de sortie
+app/
+├── main.py                 # Création de l’application et cycle de vie
+├── config.py               # Configuration et variables d’environnement
+├── cache.py                # Cache mémoire avec TTL
+├── routers/                # Routes HTTP et validation des requêtes
+├── services/               # Logique métier et orchestration
+├── clients/                # Clients Binance et Discord
+├── models/                 # Modèles métier
+└── responses/              # Schémas Pydantic de sortie
 ```
 
-Responsabilites principales :
+### Responsabilités
 
-- `main.py` assemble l'application et gere le cycle de vie des ressources.
-- `config.py` centralise les variables d'environnement et les constantes.
-- `routers/` gere HTTP, validation des entrees et codes/reponses fonctionnels.
-- `services/` contient la logique metier, independante du wiring FastAPI.
-- `clients/` encapsule les appels aux APIs externes.
-- `cache.py` fournit un cache memoire TTL partage entre les requetes.
+- `main.py` assemble l’application, configure CORS et gère le cycle de vie du client HTTP partagé.
+- `config.py` centralise les constantes et la configuration issue de l’environnement.
+- `routers/` expose les endpoints, valide les entrées et traduit les erreurs en réponses HTTP.
+- `services/` contient les calculs et la logique métier indépendamment du transport HTTP.
+- `clients/` encapsule les échanges avec Binance et Discord.
+- `cache.py` évite de répéter inutilement certains appels externes.
 
-## Flux principal : donnees d'un symbole
+## Fonctionnement
 
-Pour `GET /api/crypto/BTCUSDT` :
+### Données d’un symbole
 
-1. Le routeur normalise le symbole en majuscules et verifie qu'il est dans
-	`VALID_SYMBOLS`.
-2. La dependance `get_binance_client` injecte un `BinanceClient` qui reutilise
-	le client HTTP cree au demarrage.
-3. Le service demande a Binance le ticker 24h et 50 klines horaires.
-4. Le client Binance consulte d'abord le cache. En cas de miss, il effectue
-	l'appel REST, avec jusqu'a trois tentatives pour les erreurs reseau/5xx et
-	un backoff exponentiel.
-5. Le service calcule le RSI sur 14 periodes, la SMA 10 et la SMA 30.
-6. `CryptoData` valide et structure le resultat, puis `ApiResponse` le renvoie.
+Pour une requête telle que :
 
-Le cache dure par defaut 20 secondes. Il est local au processus : il n'est pas
-partage entre plusieurs replicas de l'API.
+```http
+GET /api/crypto/BTCUSDT
+```
 
-## Flux historique
+CryptoBlast :
 
-`GET /api/crypto/{symbol}/history?interval=1h&days=14` recupere le nombre de
-points configure pour l'intervalle, extrait open/close/timestamp des klines,
-puis calcule une SMA 10 et une SMA 30 glissantes. Les premieres valeurs sont
-`null` tant que la fenetre n'est pas complete. Les intervalles supportes vont
-de `1m` a `1d`, avec une limite maximale de 1000 points.
+1. normalise le symbole en majuscules ;
+2. vérifie qu’il appartient à la liste des symboles autorisés ;
+3. récupère le ticker sur 24 heures et 50 chandeliers horaires ;
+4. consulte le cache avant d’appeler Binance ;
+5. retente les erreurs réseau et serveur selon la configuration ;
+6. calcule le RSI 14 ainsi que les SMA 10 et 30 ;
+7. valide et renvoie le résultat avec Pydantic.
 
-## Flux des alertes Discord
+Le cache expire par défaut après 20 secondes. Il est propre à chaque processus et n’est donc pas partagé entre plusieurs instances de l’API.
 
-`POST /api/alerts/scheduler-check` est prevu pour un appel de Google Cloud
-Scheduler. Il exige le header `X-Scheduler-Token` correspondant a
-`ALERTS_SCHEDULER_TOKEN`, puis :
+### Historique
 
-1. parcourt tous les symboles de `VALID_SYMBOLS` ;
-2. recupere leurs donnees et leur RSI ;
-3. ignore les RSI compris entre 30 et 70 ;
-4. genere un PNG avec prix, SMA 10, SMA 30 et signal ;
-5. envoie un embed Discord avec le graphique pour les symboles en survente ou
-	surachat.
+```http
+GET /api/crypto/BTCUSDT/history?interval=1h&days=14
+```
 
-`POST /api/alerts/test` declenche le meme traitement sans le token, utile pour
-tester la configuration. Les alertes sont des signaux techniques informatifs,
-pas des conseils financiers.
+L’endpoint historique récupère les chandeliers correspondant à la période demandée et renvoie notamment :
 
-## Endpoints a connaitre
+- la date de chaque point ;
+- le prix d’ouverture ;
+- le prix de clôture ;
+- la SMA 10 ;
+- la SMA 30.
 
-| Methode | Endpoint | Role |
+Les premières valeurs des moyennes mobiles sont `null` tant que le nombre de points disponible ne couvre pas entièrement leur fenêtre de calcul.
+
+Les intervalles pris en charge vont de `1m` à `1d`, dans la limite de 1 000 points par requête.
+
+### Alertes Discord
+
+L’endpoint suivant est destiné à être appelé périodiquement par Google Cloud Scheduler :
+
+```http
+POST /api/alerts/scheduler-check
+X-Scheduler-Token: votre-token
+```
+
+Lors de chaque vérification, CryptoBlast :
+
+1. parcourt les symboles configurés ;
+2. récupère leurs données de marché ;
+3. calcule leur RSI ;
+4. ignore les valeurs comprises entre les seuils configurés ;
+5. génère un graphique avec le prix, les SMA 10 et 30 et le signal détecté ;
+6. publie une alerte Discord pour les actifs en survente ou en surachat.
+
+Un endpoint distinct permet de tester manuellement l’envoi d’alertes :
+
+```http
+POST /api/alerts/test
+```
+
+## Endpoints
+
+| Méthode | Endpoint | Description |
 | --- | --- | --- |
-| GET | `/` | Informations sur l'API |
-| GET | `/health` | Etat de sante et configuration utile |
-| GET | `/api/crypto` | Liste des symboles supportes |
-| GET | `/api/crypto/{symbol}` | Ticker 24h, RSI et SMA |
-| GET | `/api/crypto/{symbol}/history` | Historique et SMA par intervalle |
-| GET | `/api/intervals` | Intervalles et couverture disponibles |
-| POST | `/api/alerts/test` | Test manuel des alertes |
-| POST | `/api/alerts/scheduler-check` | Verification securisee pour scheduler |
+| `GET` | `/` | Informations générales sur l’API |
+| `GET` | `/health` | État de santé du service |
+| `GET` | `/api/crypto` | Liste des symboles pris en charge |
+| `GET` | `/api/crypto/{symbol}` | Ticker, RSI et moyennes mobiles |
+| `GET` | `/api/crypto/{symbol}/history` | Historique et moyennes mobiles |
+| `GET` | `/api/intervals` | Intervalles et couvertures disponibles |
+| `POST` | `/api/alerts/test` | Déclenchement manuel des alertes |
+| `POST` | `/api/alerts/scheduler-check` | Vérification sécurisée pour le scheduler |
 
-Documentation interactive : `http://localhost:8000/docs`.
+Une fois le serveur lancé, la documentation interactive est disponible à l’adresse suivante :
 
-## Configuration
+```text
+http://localhost:8000/docs
+```
 
-Copier `env.example` vers `.env`, puis ajuster :
+## Installation locale
 
-- `SYMBOLS` : paires Binance suivies, separees par des virgules ;
-- `CORS_ORIGINS` : origines autorisees du frontend ;
-- `CACHE_TTL_SECONDS`, `HTTP_TIMEOUT_SECONDS`, `MAX_RETRIES` et
-  `RETRY_BACKOFF_BASE` : comportement reseau ;
-- `RSI_OVERSOLD` et `RSI_OVERBOUGHT` : seuils d'alerte ;
-- `DISCORD_BOT_TOKEN`, `DISCORD_ALERT_CHANNEL_ID` et
-  `ALERTS_SCHEDULER_TOKEN` : activation et securisation des alertes.
+### Prérequis
 
-## Lancer le projet
+- Python 3.11 ou une version compatible ;
+- `pip` ;
+- un environnement virtuel Python ;
+- un accès réseau à l’API Binance.
 
-### En local
+### Préparation
+
+Créez et activez un environnement virtuel :
 
 ```powershell
-\.venv\Scripts\activate.ps1
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+Installez ensuite les dépendances :
+
+```powershell
+pip install -r requirements.txt
+```
+
+Copiez le fichier de configuration d’exemple :
+
+```powershell
+Copy-Item env.example .env
+```
+
+Renseignez les variables nécessaires dans `.env`, puis démarrez l’API :
+
+```powershell
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### Avec Docker
+## Configuration
+
+| Variable | Rôle |
+| --- | --- |
+| `SYMBOLS` | Paires Binance surveillées, séparées par des virgules |
+| `CORS_ORIGINS` | Origines autorisées à appeler l’API |
+| `CACHE_TTL_SECONDS` | Durée de conservation des données en cache |
+| `HTTP_TIMEOUT_SECONDS` | Délai maximal des appels HTTP externes |
+| `MAX_RETRIES` | Nombre maximal de nouvelles tentatives |
+| `RETRY_BACKOFF_BASE` | Base du délai exponentiel entre les tentatives |
+| `RSI_OVERSOLD` | Seuil de survente du RSI |
+| `RSI_OVERBOUGHT` | Seuil de surachat du RSI |
+| `DISCORD_BOT_TOKEN` | Jeton du bot Discord |
+| `DISCORD_ALERT_CHANNEL_ID` | Identifiant du salon recevant les alertes |
+| `ALERTS_SCHEDULER_TOKEN` | Jeton protégeant l’endpoint du scheduler |
+
+Ne publiez jamais le fichier `.env`, les jetons Discord ou le jeton du scheduler dans le dépôt.
+
+## Docker
+
+Construisez l’image :
 
 ```powershell
 docker build -t cryptoblast-backend .
+```
+
+Lancez ensuite le conteneur :
+
+```powershell
 docker run --rm --env-file .env -p 8000:8080 cryptoblast-backend
 ```
 
-Le conteneur utilise Python 3.11, installe `requirements.txt` et expose le
-port 8080. En local, Uvicorn ecoute par defaut sur le port 8000.
+Le service reste accessible depuis la machine hôte à l’adresse :
 
-## Questions d'entretien possibles
+```text
+http://localhost:8000
+```
 
-**Pourquoi un client HTTP partage ?**
+Le conteneur utilise Python 3.11 et expose l’application sur le port `8080`.
 
-Pour reutiliser les connexions, limiter le cout des handshakes et fermer
-proprement les ressources dans le `lifespan` FastAPI.
+## Résilience et gestion des erreurs
 
-**Pourquoi encapsuler Binance dans un client ?**
+Le client Binance applique jusqu’à trois tentatives avec un délai exponentiel pour les erreurs réseau et les réponses serveur `5xx`.
 
-Pour isoler le protocole externe du metier, centraliser le cache et les retries,
-et faciliter les tests avec un faux client.
+Les erreurs client `4xx` ne sont pas retentées. Elles sont converties en réponses explicites afin d’éviter d’exposer des exceptions internes aux consommateurs de l’API.
 
-**Pourquoi utiliser RSI et SMA ?**
+Le client HTTP est créé au démarrage de l’application et partagé entre les requêtes. Cela permet de réutiliser les connexions et de libérer proprement les ressources lors de l’arrêt du service.
 
-Le RSI mesure le momentum sur 14 periodes. La SMA lisse le prix et permet de
-comparer la tendance courte (10) a la tendance plus longue (30). Ce sont des
-indicateurs simples, donc ils ne constituent pas a eux seuls une strategie de
-trading fiable.
+## Limites actuelles
 
-**Que se passe-t-il si Binance est indisponible ?**
+- Le cache est conservé uniquement en mémoire.
+- Son contenu n’est pas partagé entre plusieurs instances Cloud Run.
+- Le déclenchement périodique dépend d’un scheduler externe.
+- L’anti-duplication des alertes reste à renforcer.
+- La couverture automatisée du projet doit encore être enrichie.
 
-Le client retente les erreurs reseau et serveur avec backoff. Les erreurs 4xx
-ne sont pas retentees. Le routeur transforme ensuite l'echec en reponse
-fonctionnelle explicite au lieu de laisser fuiter une exception interne.
+## Feuille de route
 
-**Quelles limites vois-tu ?**
+- ajouter des tests unitaires et d’intégration ;
+- éviter les alertes répétées pour un même signal ;
+- ajouter des métriques et une meilleure observabilité ;
+- utiliser Redis si plusieurs instances doivent partager le même cache ;
+- enrichir l’analyse avec le volume, le MACD et les bandes de Bollinger ;
+- afficher les analyses et graphiques directement dans le frontend CryptoBlast.
 
-Le cache est seulement en memoire, les alertes sont declenchees par endpoint
-plutot que par un scheduler interne, et il n'y a pas encore de suite de tests
-visible dans le depot. En production, on pourrait ajouter Redis, des tests
-unitaires/integration, de la metrique et une protection anti-duplication des
-alertes.
+## Déploiement
+
+Le backend est conçu pour être conteneurisé puis déployé sur Google Cloud Run. Google Cloud Scheduler peut appeler périodiquement l’endpoint sécurisé afin de lancer l’analyse des symboles configurés.
+
+Avant un déploiement public, vérifiez notamment :
+
+- les origines CORS autorisées ;
+- la présence des secrets dans l’environnement d’exécution ;
+- la valeur de `ALERTS_SCHEDULER_TOKEN` ;
+- les délais et tentatives des appels externes ;
+- la configuration du salon Discord.
